@@ -96,19 +96,6 @@ func (s *Service) Create(in CreateInput) (domain.ConservationTask, bool, error) 
 	}
 	ws, we = ws.UTC(), we.UTC()
 	now := s.now()
-	if ws.Before(now) {
-		return domain.ConservationTask{}, false, validation("window_start不得早于当前时间", "window_start")
-	}
-	if we.Equal(ws) {
-		return domain.ConservationTask{}, false, validation("window_end不得与window_start相同", "window_end")
-	}
-	if we.Before(ws) {
-		return domain.ConservationTask{}, false, validation("window_end必须晚于window_start", "window_end")
-	}
-	if we.Sub(ws) > MaxWindowDuration {
-		return domain.ConservationTask{}, false, validation("计划窗口不得超过30天", "window_end")
-	}
-
 	rs := risk.Assess(risk.Input{
 		Material: a.Material, Sensitivity: a.SensitivityProfile, Location: a.Location,
 		Temperature: in.Temperature, Humidity: in.Humidity, Illuminance: in.Illuminance,
@@ -124,12 +111,31 @@ func (s *Service) Create(in CreateInput) (domain.ConservationTask, bool, error) 
 		Illuminance      *float64 `json:"illuminance"`
 		HistoricalIssues []string `json:"historical_issues"`
 	}{in.ArtifactID, in.OwnerID, ws.Format(time.RFC3339Nano), we.Format(time.RFC3339Nano), in.Temperature, in.Humidity, in.Illuminance, in.HistoricalIssues}
+	fingerprint := storage.Digest(normalized)
+	// Replay an identical request before time-dependent validation: a matching key
+	// must return the original task even after window_start has passed, while a
+	// mismatched fingerprint surfaces as idempotency_conflict.
+	if stored, reused, err := s.Store.LookupTaskIdempotency(in.IdempotencyKey, fingerprint); err != nil || reused {
+		return stored, reused, err
+	}
+	if ws.Before(now) {
+		return domain.ConservationTask{}, false, validation("window_start不得早于当前时间", "window_start")
+	}
+	if we.Equal(ws) {
+		return domain.ConservationTask{}, false, validation("window_end不得与window_start相同", "window_end")
+	}
+	if we.Before(ws) {
+		return domain.ConservationTask{}, false, validation("window_end必须晚于window_start", "window_end")
+	}
+	if we.Sub(ws) > MaxWindowDuration {
+		return domain.ConservationTask{}, false, validation("计划窗口不得超过30天", "window_end")
+	}
 	t := domain.ConservationTask{
 		TaskID: newID("task"), ArtifactID: a.ArtifactID, OwnerID: in.OwnerID,
 		WindowStart: ws, WindowEnd: we, Status: domain.StatusPendingInspection, Revision: 1,
 		Checklist: risk.Checklist(rs.Level, a.Material, rs.Thresholds), RiskSnapshot: rs, CreatedAt: now,
 	}
-	stored, reused, err := s.Store.CreateTaskAtomic(t, in.IdempotencyKey, storage.Digest(normalized))
+	stored, reused, err := s.Store.CreateTaskAtomic(t, in.IdempotencyKey, fingerprint)
 	return stored, reused, err
 }
 

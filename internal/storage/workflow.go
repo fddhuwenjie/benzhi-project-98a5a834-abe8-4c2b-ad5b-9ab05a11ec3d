@@ -20,6 +20,24 @@ func revisionError(revision int, status domain.TaskStatus) error {
 	}
 }
 
+// LookupTaskIdempotency returns the stored task when the given key and fingerprint
+// match an existing task idempotency record. It allows callers to short-circuit
+// creation-time validations (such as time-dependent window checks) for identical
+// replays. On a conflicting request it returns an idempotency_conflict error.
+func (s *Store) LookupTaskIdempotency(key, fingerprint string) (domain.ConservationTask, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, reused, err := s.lookupIdempotencyLocked(key, fingerprint, "task")
+	if err != nil || !reused {
+		return domain.ConservationTask{}, false, err
+	}
+	t, ok := s.data.Tasks[id]
+	if !ok {
+		return domain.ConservationTask{}, false, domain.NewError("integrity_error", "幂等索引指向的任务不存在", "")
+	}
+	return t, true, nil
+}
+
 func (s *Store) CreateTaskAtomic(t domain.ConservationTask, idem, fingerprint string) (domain.ConservationTask, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
