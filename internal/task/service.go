@@ -159,7 +159,13 @@ func (s *Service) Detail(id string) (Detail, error) {
 	cached, cachedOK := s.detailCache[id]
 	s.detailCacheMu.Unlock()
 	if cachedOK && cached.revision == current.Revision {
-		return cached.detail, nil
+		detail := cached.detail
+		// The task revision is unchanged, but the progress is derived from the
+		// current time (schedule_status/overdue cross window boundaries even
+		// when the revision stays stable), so recompute it with a fresh clock
+		// instead of returning the time-sensitive snapshot as-is.
+		detail.Progress = s.Progress(current, s.now())
+		return detail, nil
 	}
 	view := s.Store.ReadWorkflowSnapshot()
 	for _, t := range view.Tasks {
