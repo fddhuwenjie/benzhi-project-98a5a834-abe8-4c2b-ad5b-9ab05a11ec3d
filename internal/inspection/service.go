@@ -235,7 +235,7 @@ func (s *Service) normalize(t domain.ConservationTask, in Input) ([]domain.Inspe
 	}
 
 	results := make([]domain.InspectionResult, 0, len(items))
-	anomalySet, evidenceSeen := map[string]bool{}, map[string]bool{}
+	anomalySet, evidenceSeen, measurementSeen := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	allEvidence := []string{}
 	var temperature, humidity, illuminance float64
 	for _, item := range items {
@@ -266,6 +266,10 @@ func (s *Service) normalize(t domain.ConservationTask, in Input) ([]domain.Inspe
 			if metric == "" {
 				return nil, nil, nil, 0, 0, 0, invalid("未知测量类型", "checklist_results.measurements.type")
 			}
+			if measurementSeen[metric] {
+				return nil, nil, nil, 0, 0, 0, invalid("同次巡检不能重复测量同类型指标: "+metric, "checklist_results.measurements.type")
+			}
+			measurementSeen[metric] = true
 			if measurement.Value == nil {
 				return nil, nil, nil, 0, 0, 0, invalid("测量值不能为空", "checklist_results.measurements.value")
 			}
