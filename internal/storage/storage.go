@@ -115,15 +115,24 @@ func (s *Store) persistLocked(event string) error {
 	if err = os.WriteFile(tmp, b, 0644); err != nil {
 		return err
 	}
+	// Persist the event log before atomically committing the snapshot so that
+	// any event-log failure leaves the on-disk snapshot unchanged. The caller
+	// (commitLocked) restores the in-memory state on error, which then stays
+	// consistent with the un-renamed snapshot after restart.
+	f, err := os.OpenFile(filepath.Join(s.dir, eventsFilename), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err = f.WriteString(time.Now().UTC().Format(time.RFC3339) + " " + event + "\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
 	if err = os.Rename(tmp, filepath.Join(s.dir, snapshotFilename)); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(s.dir, eventsFilename), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	_, _ = f.WriteString(time.Now().UTC().Format(time.RFC3339) + " " + event + "\n")
 	return nil
 }
 
