@@ -186,9 +186,6 @@ func (s *Service) legacyItems(t domain.ConservationTask, in Input) []ItemInput {
 				result.Measurements = append(result.Measurements, MeasurementInput{Type: "illuminance", Value: in.Illuminance, Unit: in.IlluminanceUnit})
 			}
 		}
-		if conclusion == "abnormal" {
-			result.EvidenceRefs = append([]string(nil), in.EvidenceRefs...)
-		}
 		out = append(out, result)
 	}
 	return out
@@ -232,6 +229,27 @@ func (s *Service) normalize(t domain.ConservationTask, in Input) ([]domain.Inspe
 	}
 	if len(missing) > 0 {
 		return nil, nil, nil, 0, 0, 0, &domain.BusinessError{Code: "checklist_incomplete", Message: "巡检缺少任务清单项", Field: "checklist_results", Details: map[string]any{"missing_codes": missing}}
+	}
+
+	// Pre-validate and deduplicate top-level evidence refs for legacy submissions.
+	// In legacy mode these serve as a shared evidence cover for all abnormal items
+	// whose abnormality is computed from measurements (e.g. humidity out of range).
+	legacyEvidence := []string{}
+	if !explicit {
+		legacySeen := map[string]bool{}
+		for _, ref := range in.EvidenceRefs {
+			ref = strings.TrimSpace(ref)
+			if ref == "" {
+				continue
+			}
+			if !validEvidence(ref) {
+				return nil, nil, nil, 0, 0, 0, invalid("证据引用格式无效", "evidence_refs")
+			}
+			if !legacySeen[ref] {
+				legacySeen[ref] = true
+				legacyEvidence = append(legacyEvidence, ref)
+			}
+		}
 	}
 
 	results := make([]domain.InspectionResult, 0, len(items))
@@ -307,21 +325,31 @@ func (s *Service) normalize(t domain.ConservationTask, in Input) ([]domain.Inspe
 			addAnomaly(anomalySet, "appearance")
 			itemAbnormal = true
 		}
-		if itemAbnormal && len(item.EvidenceRefs) == 0 && (explicit || len(in.EvidenceRefs) == 0) {
+		// Build the effective evidence list for this item. In legacy mode, top-level
+		// evidence refs act as a shared cover: attach them to abnormal items that lack
+		// their own evidence so that computed anomalies (e.g. humidity out of range)
+		// retain evidence on both the result and the inspection record.
+		itemEvidence := append([]string(nil), item.EvidenceRefs...)
+		if itemAbnormal && len(itemEvidence) == 0 && !explicit {
+			itemEvidence = append(itemEvidence, legacyEvidence...)
+		}
+		if itemAbnormal && len(itemEvidence) == 0 {
 			return nil, nil, nil, 0, 0, 0, &domain.BusinessError{Code: "evidence_required", Message: "异常检查项必须关联证据", Field: "checklist_results.evidence_refs", Details: map[string]any{"checklist_code": item.Code}}
 		}
-		for _, ref := range item.EvidenceRefs {
+		for _, ref := range itemEvidence {
 			ref = strings.TrimSpace(ref)
 			if !validEvidence(ref) {
 				return nil, nil, nil, 0, 0, 0, invalid("证据引用格式无效", "checklist_results.evidence_refs")
 			}
-			if evidenceSeen[ref] {
+			if explicit && evidenceSeen[ref] {
 				return nil, nil, nil, 0, 0, 0, invalid("同次巡检不能重复使用证据引用", "checklist_results.evidence_refs")
 			}
-			evidenceSeen[ref] = true
-			allEvidence = append(allEvidence, ref)
+			if !evidenceSeen[ref] {
+				evidenceSeen[ref] = true
+				allEvidence = append(allEvidence, ref)
+			}
 		}
-		results = append(results, domain.InspectionResult{Code: item.Code, Conclusion: conclusion, Observation: observation, Measurements: normalizedMeasurements, EvidenceRefs: append([]string(nil), item.EvidenceRefs...)})
+		results = append(results, domain.InspectionResult{Code: item.Code, Conclusion: conclusion, Observation: observation, Measurements: normalizedMeasurements, EvidenceRefs: append([]string(nil), itemEvidence...)})
 	}
 	anomalies := make([]string, 0, len(anomalySet))
 	for code := range anomalySet {
