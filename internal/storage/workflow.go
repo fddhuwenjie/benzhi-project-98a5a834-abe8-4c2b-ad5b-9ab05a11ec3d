@@ -20,6 +20,31 @@ func revisionError(revision int, status domain.TaskStatus) error {
 	}
 }
 
+func (s *Store) AddArtifactAtomic(a domain.ArtifactRecord, idem, fingerprint string) (domain.ArtifactRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idem != "" {
+		if id, reused, err := s.lookupIdempotencyLocked(idem, fingerprint, "artifact"); err != nil {
+			return domain.ArtifactRecord{}, false, err
+		} else if reused {
+			old, ok := s.data.Artifacts[id]
+			if !ok {
+				return domain.ArtifactRecord{}, false, domain.NewError("integrity_error", "幂等索引指向的文物档案不存在", "")
+			}
+			return old, true, nil
+		}
+	}
+	before := s.cloneSnapshotLocked()
+	s.data.Artifacts[a.ArtifactID] = a
+	if idem != "" {
+		s.saveIdempotencyLocked(idem, fingerprint, "artifact", a.ArtifactID)
+	}
+	if err := s.commitLocked("artifact:"+a.ArtifactID, before); err != nil {
+		return domain.ArtifactRecord{}, false, err
+	}
+	return a, false, nil
+}
+
 func (s *Store) CreateTaskAtomic(t domain.ConservationTask, idem, fingerprint string) (domain.ConservationTask, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

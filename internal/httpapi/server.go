@@ -130,13 +130,24 @@ func (s *Server) artifacts(w http.ResponseWriter, r *http.Request) {
 		errw(w, domain.NewError("validation_error", "material不能为空", "material"))
 		return
 	}
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	now := time.Now().UTC()
 	a.CreatedAt, a.UpdatedAt, a.CurrentRiskLevel = now, now, domain.RiskLow
-	if err := s.Store.AddArtifact(a); err != nil {
+	fingerprint := storage.Digest(struct {
+		ArtifactID string `json:"artifact_id"`
+		Title      string `json:"title"`
+		Material   string `json:"material"`
+	}{a.ArtifactID, a.Title, a.Material})
+	stored, reused, err := s.Store.AddArtifactAtomic(a, idem, fingerprint)
+	if err != nil {
 		errw(w, err)
 		return
 	}
-	write(w, http.StatusCreated, a)
+	status := http.StatusCreated
+	if reused {
+		status = http.StatusOK
+	}
+	write(w, status, stored)
 }
 
 func taskPathID(path string) string {
