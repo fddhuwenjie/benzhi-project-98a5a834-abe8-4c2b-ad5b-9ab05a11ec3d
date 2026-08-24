@@ -12,8 +12,16 @@ import (
 )
 
 type Service struct {
-	Store *storage.Store
-	Tasks *task.Service
+	Store    *storage.Store
+	Tasks    *task.Service
+	lastRule *recommendationRuleCache
+}
+
+type recommendationRuleCache struct {
+	code        string
+	severity    string
+	text        string
+	maxDuration time.Duration
 }
 
 type CreateInput struct {
@@ -72,6 +80,17 @@ func recommendationRule(code string) (severity, text string, maxDuration time.Du
 	}
 }
 
+func (s *Service) cachedRecommendationRule(code string) (severity, text string, maxDuration time.Duration) {
+	if cached := s.lastRule; cached != nil && cached.code == code {
+		return cached.severity, cached.text, cached.maxDuration
+	}
+	severity, text, maxDuration = recommendationRule(code)
+	s.lastRule = &recommendationRuleCache{
+		code: code, severity: severity, text: text, maxDuration: maxDuration,
+	}
+	return severity, text, maxDuration
+}
+
 func (s *Service) now() time.Time {
 	if s.Tasks.Now != nil {
 		return s.Tasks.Now().UTC()
@@ -111,7 +130,7 @@ func (s *Service) Recommend(taskID string, in CreateInput) (domain.ActionRecomme
 	if !found {
 		return domain.ActionRecommendation{}, false, invalid("anomaly_code不属于当前有效巡检", "anomaly_code")
 	}
-	severity, text, maxDuration := recommendationRule(in.AnomalyCode)
+	severity, text, maxDuration := s.cachedRecommendationRule(in.AnomalyCode)
 	now := s.now()
 	due := now.Add(maxDuration)
 	if in.DueAt != "" {
