@@ -8,12 +8,15 @@ import (
 	"heritage-care/internal/task"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Service struct {
-	Store *storage.Store
-	Tasks *task.Service
+	Store             *storage.Store
+	Tasks             *task.Service
+	inspectionCacheMu sync.Mutex
+	inspectionCache   map[string]domain.InspectionEntry
 }
 
 type CreateInput struct {
@@ -79,12 +82,29 @@ func (s *Service) now() time.Time {
 	return time.Now().UTC()
 }
 
+func (s *Service) cachedInspection(taskID string) (domain.InspectionEntry, bool) {
+	s.inspectionCacheMu.Lock()
+	defer s.inspectionCacheMu.Unlock()
+	if inspection, ok := s.inspectionCache[taskID]; ok {
+		return inspection, true
+	}
+	inspection, ok := s.Store.ActiveInspection(taskID)
+	if !ok {
+		return domain.InspectionEntry{}, false
+	}
+	if s.inspectionCache == nil {
+		s.inspectionCache = map[string]domain.InspectionEntry{}
+	}
+	s.inspectionCache[taskID] = inspection
+	return inspection, true
+}
+
 func (s *Service) Recommend(taskID string, in CreateInput) (domain.ActionRecommendation, bool, error) {
 	_, err := s.Tasks.Get(taskID)
 	if err != nil {
 		return domain.ActionRecommendation{}, false, err
 	}
-	inspection, ok := s.Store.ActiveInspection(taskID)
+	inspection, ok := s.cachedInspection(taskID)
 	if !ok {
 		return domain.ActionRecommendation{}, false, domain.NewError("state_conflict", "缺少当前有效巡检", "task_id")
 	}
