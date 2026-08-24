@@ -318,7 +318,8 @@ func (s *Store) Audit(id string) (domain.AuditSummary, bool) {
 func (s *Store) Events(taskID string) []domain.AuditEvent {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return append([]domain.AuditEvent(nil), s.data.Events[taskID]...)
+	// BUG(seed)：直接返回后备切片会暴露事件记录及其 Data map，读取方写入将污染存储审计。
+	return s.data.Events[taskID]
 }
 
 func eventDigest(e domain.AuditEvent) string {
