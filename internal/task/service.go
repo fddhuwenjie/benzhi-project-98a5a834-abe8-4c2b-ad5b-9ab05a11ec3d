@@ -12,14 +12,22 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const MaxWindowDuration = 30 * 24 * time.Hour
 
 type Service struct {
-	Store *storage.Store
-	Now   func() time.Time
+	Store         *storage.Store
+	Now           func() time.Time
+	detailCacheMu sync.Mutex
+	detailCache   map[string]detailCacheEntry
+}
+
+type detailCacheEntry struct {
+	revision int
+	detail   Detail
 }
 
 type CreateInput struct {
@@ -142,11 +150,29 @@ func (s *Service) Get(id string) (domain.ConservationTask, error) {
 }
 
 func (s *Service) Detail(id string) (Detail, error) {
+	id = strings.TrimSpace(id)
+	current, ok := s.Store.GetTask(id)
+	if !ok {
+		return Detail{}, domain.NewError("not_found", "任务不存在", "task_id")
+	}
+	s.detailCacheMu.Lock()
+	cached, cachedOK := s.detailCache[id]
+	s.detailCacheMu.Unlock()
+	if cachedOK && cached.revision == current.Revision {
+		return cached.detail, nil
+	}
 	view := s.Store.ReadWorkflowSnapshot()
 	for _, t := range view.Tasks {
-		if t.TaskID == strings.TrimSpace(id) {
+		if t.TaskID == id {
 			inspection, hasInspection := view.ActiveInspections[t.TaskID]
-			return Detail{ConservationTask: t, Progress: s.progress(t, s.now(), inspection, hasInspection, view.Actions[t.TaskID])}, nil
+			detail := Detail{ConservationTask: t, Progress: s.progress(t, s.now(), inspection, hasInspection, view.Actions[t.TaskID])}
+			s.detailCacheMu.Lock()
+			if s.detailCache == nil {
+				s.detailCache = make(map[string]detailCacheEntry)
+			}
+			s.detailCache[id] = detailCacheEntry{revision: t.Revision, detail: detail}
+			s.detailCacheMu.Unlock()
+			return detail, nil
 		}
 	}
 	return Detail{}, domain.NewError("not_found", "任务不存在", "task_id")
