@@ -12,14 +12,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const MaxWindowDuration = 30 * 24 * time.Hour
 
 type Service struct {
-	Store *storage.Store
-	Now   func() time.Time
+	Store     *storage.Store
+	Now       func() time.Time
+	riskMu    sync.Mutex
+	riskCache map[string]domain.RiskSnapshot
 }
 
 type CreateInput struct {
@@ -71,6 +74,30 @@ func validation(message, field string) error {
 	return domain.NewError("validation_error", message, field)
 }
 
+func (s *Service) assessRisk(a domain.ArtifactRecord, in CreateInput) domain.RiskSnapshot {
+	cacheKey := storage.Digest(struct {
+		Material    string
+		Sensitivity string
+		Location    string
+		RuleVersion string
+	}{a.Material, a.SensitivityProfile, a.Location, risk.RuleVersion})
+	s.riskMu.Lock()
+	defer s.riskMu.Unlock()
+	if cached, ok := s.riskCache[cacheKey]; ok {
+		return cached
+	}
+	assessed := risk.Assess(risk.Input{
+		Material: a.Material, Sensitivity: a.SensitivityProfile, Location: a.Location,
+		Temperature: in.Temperature, Humidity: in.Humidity, Illuminance: in.Illuminance,
+		HistoricalIssues: in.HistoricalIssues,
+	})
+	if s.riskCache == nil {
+		s.riskCache = make(map[string]domain.RiskSnapshot)
+	}
+	s.riskCache[cacheKey] = assessed
+	return assessed
+}
+
 func (s *Service) Create(in CreateInput) (domain.ConservationTask, bool, error) {
 	in.ArtifactID, in.OwnerID = strings.TrimSpace(in.ArtifactID), strings.TrimSpace(in.OwnerID)
 	if in.ArtifactID == "" {
@@ -109,11 +136,7 @@ func (s *Service) Create(in CreateInput) (domain.ConservationTask, bool, error) 
 		return domain.ConservationTask{}, false, validation("计划窗口不得超过30天", "window_end")
 	}
 
-	rs := risk.Assess(risk.Input{
-		Material: a.Material, Sensitivity: a.SensitivityProfile, Location: a.Location,
-		Temperature: in.Temperature, Humidity: in.Humidity, Illuminance: in.Illuminance,
-		HistoricalIssues: in.HistoricalIssues,
-	})
+	rs := s.assessRisk(a, in)
 	normalized := struct {
 		ArtifactID       string   `json:"artifact_id"`
 		OwnerID          string   `json:"owner_id"`
